@@ -169,22 +169,15 @@ void fastPredictIMU(double t, V3D acc, V3D gyr)
     latest_gyr_0 = gyr;
     nav_msgs::Odometry odomHigh;
     
-    V3D pub_P = latest_P;
-    M3D pub_Q = latest_Q;
-    
-    if(level_publish_en) {
-        pub_Q = latest_Q * R_level;
-    }
-    
-    Eigen::Quaterniond quadrotor_Q = Eigen::Quaterniond(pub_Q);
+    Eigen::Quaterniond quadrotor_Q = Eigen::Quaterniond(latest_Q);
     odomHigh.header.stamp = ros::Time().fromSec(t);
     odomHigh.header.frame_id = "world";
     odomHigh.child_frame_id = "odom_imu";
     
     /*** [MODIFIED] 使用参数化的偏置代替硬编码的-1 ***/
-    odomHigh.pose.pose.position.x = pub_P.x() + init_offset_x;
-    odomHigh.pose.pose.position.y = pub_P.y() + init_offset_y;
-    odomHigh.pose.pose.position.z = pub_P.z() + init_offset_z;
+    odomHigh.pose.pose.position.x = latest_P.x() + init_offset_x;
+    odomHigh.pose.pose.position.y = latest_P.y() + init_offset_y;
+    odomHigh.pose.pose.position.z = latest_P.z() + init_offset_z;
 
     odomHigh.pose.pose.orientation.x = quadrotor_Q.x();
     odomHigh.pose.pose.orientation.y = quadrotor_Q.y();
@@ -680,35 +673,16 @@ void set_posestamp(T & out)
     
 }
 
-template<typename T>
-void set_posestamp_leveled(T & out)
-{
-    V3D pos_pub = state_point.pos;
-    Eigen::Quaterniond q_pub(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
-    
-    if(level_publish_en) {
-        M3D rot_leveled = state_point.rot.toRotationMatrix() * R_level;
-        q_pub = Eigen::Quaterniond(rot_leveled);
-    }
-    
-    out.pose.position.x = pos_pub(0) + init_offset_x;
-    out.pose.position.y = pos_pub(1) + init_offset_y;
-    out.pose.position.z = pos_pub(2) + init_offset_z;
-    out.pose.orientation.x = q_pub.x();
-    out.pose.orientation.y = q_pub.y();
-    out.pose.orientation.z = q_pub.z();
-    out.pose.orientation.w = q_pub.w();
-}
-
-/*** [MODIFIED] 修改publish_odometry函数，使用新的位姿设置函数 ***/
 void publish_odometry(const ros::Publisher & pubOdomAftMapped)
 {
     odomAftMapped.header.frame_id = "camera_init";
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);
     
-    /*** [MODIFIED] 使用带拉平和偏置的位姿设置 ***/
-    set_posestamp_leveled(odomAftMapped.pose);
+    set_posestamp(odomAftMapped.pose);
+    odomAftMapped.pose.pose.position.x += init_offset_x;
+    odomAftMapped.pose.pose.position.y += init_offset_y;
+    odomAftMapped.pose.pose.position.z += init_offset_z;
     
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
@@ -739,11 +713,12 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     br.sendTransform( tf::StampedTransform( transform, odomAftMapped.header.stamp, "camera_init", "body" ) );
 }
 
-/*** [MODIFIED] 修改publish_path函数，使用新的位姿设置函数 ***/
 void publish_path(const ros::Publisher pubPath)
 {
-    /*** [MODIFIED] 使用带拉平和偏置的位姿设置 ***/
-    set_posestamp_leveled(msg_body_pose);
+    set_posestamp(msg_body_pose);
+    msg_body_pose.pose.position.x += init_offset_x;
+    msg_body_pose.pose.position.y += init_offset_y;
+    msg_body_pose.pose.position.z += init_offset_z;
     
     msg_body_pose.header.stamp = ros::Time().fromSec(lidar_end_time);
     msg_body_pose.header.frame_id = "camera_init";
@@ -967,6 +942,10 @@ int main(int argc, char** argv)
 
     Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
     Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
+    if(level_publish_en) {
+        Lidar_R_wrt_IMU = Lidar_R_wrt_IMU * R_level;
+        ROS_INFO("Apply lidar installation attitude to extrinsic_R.");
+    }
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
     p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
     p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
