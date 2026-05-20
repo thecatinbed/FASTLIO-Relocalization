@@ -1,0 +1,4 @@
+# ROS / catkin generated files
+build/
+devel/
+log/

@@ -169,13 +169,11 @@ void fastPredictIMU(double t, V3D acc, V3D gyr)
     latest_gyr_0 = gyr;
     nav_msgs::Odometry odomHigh;
     
-    /*** [MODIFIED] 应用拉平和偏置 ***/
     V3D pub_P = latest_P;
     M3D pub_Q = latest_Q;
     
     if(level_publish_en) {
-        pub_P = R_level * latest_P;
-        pub_Q = R_level * latest_Q;
+        pub_Q = latest_Q * R_level;
     }
     
     Eigen::Quaterniond quadrotor_Q = Eigen::Quaterniond(pub_Q);
@@ -193,11 +191,9 @@ void fastPredictIMU(double t, V3D acc, V3D gyr)
     odomHigh.pose.pose.orientation.z = quadrotor_Q.z();
     odomHigh.pose.pose.orientation.w = quadrotor_Q.w();
 
-    /*** [MODIFIED] 速度也需要拉平 ***/
-    V3D pub_V = level_publish_en ? R_level * latest_V : latest_V;
-    odomHigh.twist.twist.linear.x = pub_V.x();
-    odomHigh.twist.twist.linear.y = pub_V.y();
-    odomHigh.twist.twist.linear.z = pub_V.z();
+    odomHigh.twist.twist.linear.x = latest_V.x();
+    odomHigh.twist.twist.linear.y = latest_V.y();
+    odomHigh.twist.twist.linear.z = latest_V.z();
 
     odomHigh.twist.twist.angular.x = gyr.x() - state_point.bg.x();
     odomHigh.twist.twist.angular.y = gyr.y() - state_point.bg.y();
@@ -263,18 +259,11 @@ void pointBodyToWorld(const Matrix<T, 3, 1> &pi, Matrix<T, 3, 1> &po)
     po[2] = p_global(2);
 }
 
-/*** [MODIFIED] 修改RGBpointBodyToWorld函数，添加拉平和偏置支持 ***/
 void RGBpointBodyToWorld(PointType const * const pi, PointType * const po)
 {
     V3D p_body(pi->x, pi->y, pi->z);
     V3D p_global(state_point.rot * (state_point.offset_R_L_I*p_body + state_point.offset_T_L_I) + state_point.pos);
 
-    /*** [MODIFIED] 应用拉平修正 ***/
-    if(level_publish_en) {
-        p_global = R_level * p_global;
-    }
-
-    /*** [MODIFIED] 使用参数化的偏置代替硬编码的-1 ***/
     po->x = p_global(0) + init_offset_x;
     po->y = p_global(1) + init_offset_y;
     po->z = p_global(2) + init_offset_z;
@@ -659,46 +648,23 @@ void publish_effect_world(const ros::Publisher & pubLaserCloudEffect)
     pubLaserCloudEffect.publish(laserCloudFullRes3);
 }
 
-/*** [MODIFIED] 修改publish_map函数，添加拉平和偏置支持 ***/
 void publish_map(const ros::Publisher & pubLaserCloudMap)
 {
-    if(level_publish_en) {
-        /*** [MODIFIED] 拉平地图点云 ***/
-        PointCloudXYZI::Ptr featsFromMap_leveled(new PointCloudXYZI());
-        featsFromMap_leveled->resize(featsFromMap->size());
-        
-        for(size_t i = 0; i < featsFromMap->size(); i++) {
-            V3D p(featsFromMap->points[i].x, featsFromMap->points[i].y, featsFromMap->points[i].z);
-            V3D p_leveled = R_level * p;
-            featsFromMap_leveled->points[i].x = p_leveled(0) + init_offset_x;
-            featsFromMap_leveled->points[i].y = p_leveled(1) + init_offset_y;
-            featsFromMap_leveled->points[i].z = p_leveled(2) + init_offset_z;
-            featsFromMap_leveled->points[i].intensity = featsFromMap->points[i].intensity;
-        }
-        
-        sensor_msgs::PointCloud2 laserCloudMap;
-        pcl::toROSMsg(*featsFromMap_leveled, laserCloudMap);
-        laserCloudMap.header.stamp = ros::Time().fromSec(lidar_end_time);
-        laserCloudMap.header.frame_id = "camera_init";
-        pubLaserCloudMap.publish(laserCloudMap);
-    } else {
-        /*** [MODIFIED] 即使不拉平，也要应用偏置 ***/
-        PointCloudXYZI::Ptr featsFromMap_offset(new PointCloudXYZI());
-        featsFromMap_offset->resize(featsFromMap->size());
-        
-        for(size_t i = 0; i < featsFromMap->size(); i++) {
-            featsFromMap_offset->points[i].x = featsFromMap->points[i].x + init_offset_x;
-            featsFromMap_offset->points[i].y = featsFromMap->points[i].y + init_offset_y;
-            featsFromMap_offset->points[i].z = featsFromMap->points[i].z + init_offset_z;
-            featsFromMap_offset->points[i].intensity = featsFromMap->points[i].intensity;
-        }
-        
-        sensor_msgs::PointCloud2 laserCloudMap;
-        pcl::toROSMsg(*featsFromMap_offset, laserCloudMap);
-        laserCloudMap.header.stamp = ros::Time().fromSec(lidar_end_time);
-        laserCloudMap.header.frame_id = "camera_init";
-        pubLaserCloudMap.publish(laserCloudMap);
+    PointCloudXYZI::Ptr featsFromMap_offset(new PointCloudXYZI());
+    featsFromMap_offset->resize(featsFromMap->size());
+    
+    for(size_t i = 0; i < featsFromMap->size(); i++) {
+        featsFromMap_offset->points[i].x = featsFromMap->points[i].x + init_offset_x;
+        featsFromMap_offset->points[i].y = featsFromMap->points[i].y + init_offset_y;
+        featsFromMap_offset->points[i].z = featsFromMap->points[i].z + init_offset_z;
+        featsFromMap_offset->points[i].intensity = featsFromMap->points[i].intensity;
     }
+    
+    sensor_msgs::PointCloud2 laserCloudMap;
+    pcl::toROSMsg(*featsFromMap_offset, laserCloudMap);
+    laserCloudMap.header.stamp = ros::Time().fromSec(lidar_end_time);
+    laserCloudMap.header.frame_id = "camera_init";
+    pubLaserCloudMap.publish(laserCloudMap);
 }
 
 template<typename T>
@@ -714,7 +680,6 @@ void set_posestamp(T & out)
     
 }
 
-/*** [MODIFIED] 新增：带拉平和偏置的位姿设置函数 ***/
 template<typename T>
 void set_posestamp_leveled(T & out)
 {
@@ -722,8 +687,7 @@ void set_posestamp_leveled(T & out)
     Eigen::Quaterniond q_pub(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
     
     if(level_publish_en) {
-        pos_pub = R_level * state_point.pos;
-        M3D rot_leveled = R_level * state_point.rot.toRotationMatrix();
+        M3D rot_leveled = state_point.rot.toRotationMatrix() * R_level;
         q_pub = Eigen::Quaterniond(rot_leveled);
     }
     
